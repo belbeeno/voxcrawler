@@ -2,7 +2,7 @@ use chrono::{Date, Utc, TimeZone};
 use mysql::*;
 use mysql::prelude::*;
 use regex::Regex;
-use std::{env, str, thread, time};
+use std::{env, io, str, thread, time};
 use std::collections::HashSet;
 
 mod vox_utils;
@@ -31,11 +31,9 @@ struct VoxEntry {
     date: String,
     content: String
 }
-/*
 impl VoxEntry {
-    fn to_string(&self) -> String { format!("ID:[{}] Content:[{}]", self.id, self.content) }
+    //fn to_string(&self) -> String { format!("ID:[{}] Content:[{}]", self.id, self.content) }
 }
-*/
 
 struct VoxIndexData {
     id: u64,
@@ -52,16 +50,99 @@ impl VoxIndexData {
 // MArio is missing
 // SELECT * FROM `voxes` WHERE `id` = (SELECT `id` FROM `vox_meta` WHERE MATCH(`indexed_content`) AGAINST("mario"));
 
-fn main()
-{
-    index_log("2021-02-07-voxLog.txt");
+fn main() -> io::Result<()> {
+    println!("\nWelcome to the vox crawler console!");
+    fn print_commands() {
+        println!("-- Commands --");
+        println!(" n - pull new voxes into the DB, and index them");
+        println!(" f YYYY-MM-DD-voxlog.txt - force pull existing log and index it");
+        println!(" q - quit");
+    }
+
+    let mut input = String::new();
+    while input != "q" {
+        print_commands();
+        io::stdin().read_line(&mut input).unwrap();
+        let mut params_iter = input.split_whitespace();
+        let command = match params_iter.next() {
+            None => "",
+            Some(_cmd) => _cmd,
+        };
+        if command == "n" {
+            // pull new voxes
+            println!("Retreiving vox listing...");
+            let listings = get_vox_listing();
+            let opts = Opts::from_url(&get_db_path()).unwrap();
+            let pool = Pool::new(opts).unwrap();
+            let mut conn = pool.get_conn().unwrap();
+            for i in 0..3 {
+                if is_on_file(&listings[i].id, &mut conn) {
+                    println!("Entry [{}] already on db.  Ignoring...", &listings[i].id);
+                }
+                else {
+                    println!("Retreiving entry [{}]...", listings[i].id);
+                    collect_and_commit(&listings[i], &mut conn);
+                    index_log(&listings[i].id, &mut conn);
+                }
+            }
+
+
+            println!("Pull complete");
+        }
+        else if command == "f" {
+            // force pull existing log
+            let opts = Opts::from_url(&get_db_path()).unwrap();
+            let pool = Pool::new(opts).unwrap();
+            let mut conn = pool.get_conn().unwrap();
+            let log_id = params_iter.next().unwrap();
+            println!("Force syncing entry for {log_id}");
+            index_log(log_id, &mut conn);
+            println!("Force update complete");
+        }
+        else if command == "q" {
+            println!("Bye bye!");
+            return Ok(());
+        }
+        else {
+            println!("\nUnhandled command {command}");
+        }
+        input = String::new();
+    }
+
+    //index_log("2021-02-07-voxLog.txt");
+
+    Ok(())
 }
 
-fn index_log(log_id:&str) {
-    let dbpath : String = get_db_path();
-    let opts = Opts::from_url(&dbpath).unwrap();
-    let pool = Pool::new(opts).unwrap();
-    let mut conn = pool.get_conn().unwrap();
+fn is_on_file(log_id:&str, conn:&mut PooledConn) -> bool {
+    let query = format!("SELECT COUNT(*) FROM `voxes` WHERE `log_id` = \"{log_id}\"");
+    let result:Option<u32> = conn.query_first(query).unwrap();
+    match result {
+        Some(x) => x > 0,
+        None => false,
+    }
+}
+
+fn get_vox_listing() -> Vec<Listing> {
+    let mut listings : Vec<Listing>= Vec::new();
+    let root_req = reqwest::blocking::get("https://rook.zone/voxlogs").unwrap();
+    let root_body = root_req.text().unwrap();
+
+    // Get all the entries from the root listing page
+    let rx_listings = Regex::new(r#"<a href="([0-9]{4}-[0-9]{2}-[0-9]{2}-.*\.txt)">"#).unwrap();
+    for listing_cap in rx_listings.captures_iter(&root_body) {
+        //println!("{}", current_name);
+        let parsed_data : Date<Utc> = parse_date_from_filename(listing_cap[1].to_string());
+        let listing = Listing {
+            id: listing_cap[1].to_string(),
+            date: parsed_data.format("%Y-%m-%d").to_string(),
+        };
+        listings.push(listing);
+    }
+    listings
+}
+
+fn index_log(log_id:&str, conn:&mut PooledConn) {
     let query = format!("SELECT `id`, `content` FROM `voxes` WHERE `log_id` = \"{log_id}\"");
     let voxes = conn.query_map(query,
         |(new_id, new_content)| {
@@ -128,64 +209,38 @@ fn index_log(log_id:&str) {
 
 }
 
-#[allow(dead_code)]
-fn collect_and_commit() {
-    let mut listings : Vec<Listing>= Vec::new();
-    let root_req = reqwest::blocking::get("https://rook.zone/voxlogs").unwrap();
-    let root_body = root_req.text().unwrap();
-
-    // Get all the entries from the root listing page
-    let rx_listings = Regex::new(r#"<a href="([0-9]{4}-[0-9]{2}-[0-9]{2}-.*\.txt)">"#).unwrap();
-    for listing_cap in rx_listings.captures_iter(&root_body) {
-        //println!("{}", current_name);
-        let parsed_data : Date<Utc> = parse_date_from_filename(listing_cap[1].to_string());
-        let listing = Listing {
-            id: listing_cap[1].to_string(),
-            date: parsed_data.format("%Y-%m-%d").to_string(),
-        };
-        listings.push(listing);
-    }
-
-    // Get the db access sorted before we start looping
-    let opts = Opts::from_url(&get_db_path()).unwrap();
-    let pool = Pool::new(opts).unwrap();
-    let mut conn = pool.get_conn().unwrap();
-
+fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
     // Get the voxes for each listing (as identified inside the hrefs above)
     let wait = time::Duration::from_secs(3);
     let rx_voxes = Regex::new(r#"From (\w*):.*\n(.*)"#).unwrap();
-    let listing = &listings[0];
-    //for listing in listings
-    {
-        let listing_path = format!("https://rook.zone/voxlogs/{}", listing.id);
-        let listing_req = reqwest::blocking::get(listing_path).unwrap();
-        let listing_body = listing_req.text().unwrap();
-        println!("{}", listing.to_string());
+    let listing_path = format!("https://rook.zone/voxlogs/{}", listing.id);
+    let listing_req = reqwest::blocking::get(listing_path).unwrap();
+    let listing_body = listing_req.text().unwrap();
+    println!("{}", listing.to_string());
 
-        // Parse all the voxes and their authors in this listing
-        let mut voxes : Vec<VoxEntry> = Vec::new();
-        for vox_cap in rx_voxes.captures_iter(&listing_body) {
-            voxes.push( VoxEntry{
-                id: 0,  // Not assigned on submission, it's auto incremented
-                author: vox_cap[1].to_string(),
-                log_id: listing.id.clone(),
-                date: listing.date.clone(),
-                content: vox_cap[2].to_string(),
-            });
-        }
-        conn.exec_batch(
-            r"INSERT INTO voxes (author, log_id, date, content)
-            VALUES (:author, :log_id, :date, :content)",
-            voxes.iter().map(|p| params!{
-                "author" => p.author.clone(),
-                "log_id" => p.log_id.clone(),
-                "date" => p.date.clone(),
-                "content" => p.content.clone()
-             })).unwrap();
-
-        // We have the voxes for this listing!  Now time to feed it to the DB I guess?  Should we have confirmed with the DB earlier if we even needed to do this?
-        thread::sleep(wait);
+    // Parse all the voxes and their authors in this listing
+    let mut voxes : Vec<VoxEntry> = Vec::new();
+    for vox_cap in rx_voxes.captures_iter(&listing_body) {
+        voxes.push( VoxEntry{
+            id: 0,  // Not assigned on submission, it's auto incremented
+            author: vox_cap[1].to_string(),
+            log_id: listing.id.clone(),
+            date: listing.date.clone(),
+            content: vox_cap[2].to_string(),
+        });
     }
+    conn.exec_batch(
+        r"INSERT INTO voxes (author, log_id, date, content)
+        VALUES (:author, :log_id, :date, :content)",
+        voxes.iter().map(|p| params!{
+            "author" => p.author.clone(),
+            "log_id" => p.log_id.clone(),
+            "date" => p.date.clone(),
+            "content" => p.content.clone()
+         })).unwrap();
+
+    // We have the voxes for this listing!  Now time to feed it to the DB I guess?  Should we have confirmed with the DB earlier if we even needed to do this?
+    thread::sleep(wait);
 }
 
 fn parse_date_from_filename(name:String) -> chrono::Date<Utc> {
