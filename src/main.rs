@@ -230,10 +230,10 @@ fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
     for vox_cap in rx_voxes.captures_iter(&listing_body) {
         voxes.push( VoxEntry{
             id: 0,  // Not assigned on submission, it's auto incremented
-            author: vox_cap[1].to_string(),
+            author: filters::sanatize(vox_cap[1].to_string()),
             log_id: listing.id.clone(),
             date: listing.date.clone(),
-            content: vox_cap[2].to_string(),
+            content: filters::sanatize(vox_cap[2].to_string()),
         });
     }
 
