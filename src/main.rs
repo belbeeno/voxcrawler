@@ -79,18 +79,18 @@ fn main() -> io::Result<()> {
             let pool = Pool::new(opts).unwrap();
             let mut conn = pool.get_conn().unwrap();
             println!("Listing retrieved in [{}ms], processing...", now.elapsed().as_millis());
-            for i in 0..3 {
-                if is_on_file(&listings[i].id, &mut conn) {
-                    println!("Entry [{}] already on db.  Ignoring...", &listings[i].id);
+            for listing in listings{
+                if is_on_file(&listing.id, &mut conn) {
+                    println!("Entry [{}] already on db.  Ignoring...", &listing.id);
                 }
                 else {
-                    println!("Retreiving entry [{}]...", listings[i].id);
+                    println!("Retreiving entry [{}]...", listing.id);
                     let now = Instant::now();
-                    collect_and_commit(&listings[i], &mut conn);
+                    collect_and_commit(&listing, &mut conn);
                     println!("Entry retrieved in [{}ms], indexing...", now.elapsed().as_millis());
                     let now = Instant::now();
-                    index_log(&listings[i].id, &mut conn);
-                    println!("Indexing for entry [{}] complete in [{}ms]", listings[i].id, now.elapsed().as_millis());
+                    index_log(&listing.id, &mut conn);
+                    println!("Indexing for entry [{}] complete in [{}ms]", listing.id, now.elapsed().as_millis());
                 }
             }
 
@@ -174,12 +174,13 @@ fn index_log(log_id:&str, conn:&mut PooledConn) {
         let has_morshu :bool = vox.content.contains("^m");
 
         // Perform filtering
-        let cleaned_vox = filters::contractions(
+        let cleaned_vox = filters::cleanup(
+                            filters::contractions(
                             filters::control_codes(
                             filters::pitch(
                             filters::pause(
                             filters::trunc( 
-                            filters::sanatize( vox.content.to_lowercase() ))))));
+                            filters::sanatize( vox.content.to_lowercase() )))))));
         let content_arr : Vec<&str> = cleaned_vox.split(' ').collect();
         let mut indexed_content = String::new();
         let mut used_words = HashSet::new();
