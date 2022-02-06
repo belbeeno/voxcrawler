@@ -2,8 +2,9 @@ use chrono::{Date, Utc, TimeZone};
 use mysql::*;
 use mysql::prelude::*;
 use regex::Regex;
-use std::{env, io, str, thread, time};
+use std::{env, io, str};
 use std::collections::HashSet;
+use std::time::Instant;
 
 mod vox_utils;
 pub use crate::vox_utils::filters;
@@ -71,23 +72,29 @@ fn main() -> io::Result<()> {
         if command == "n" {
             // pull new voxes
             println!("Retreiving vox listing...");
+            let total_now = Instant::now();
+            let now  = Instant::now();
             let listings = get_vox_listing();
             let opts = Opts::from_url(&get_db_path()).unwrap();
             let pool = Pool::new(opts).unwrap();
             let mut conn = pool.get_conn().unwrap();
+            println!("Listing retrieved in [{}ms], processing...", now.elapsed().as_millis());
             for i in 0..3 {
                 if is_on_file(&listings[i].id, &mut conn) {
                     println!("Entry [{}] already on db.  Ignoring...", &listings[i].id);
                 }
                 else {
                     println!("Retreiving entry [{}]...", listings[i].id);
+                    let now = Instant::now();
                     collect_and_commit(&listings[i], &mut conn);
+                    println!("Entry retrieved in [{}ms], indexing...", now.elapsed().as_millis());
+                    let now = Instant::now();
                     index_log(&listings[i].id, &mut conn);
+                    println!("Indexing for entry [{}] complete in [{}ms]", listings[i].id, now.elapsed().as_millis());
                 }
             }
 
-
-            println!("Pull complete");
+            println!("Pull complete!  Total time: [{}s]", total_now.elapsed().as_secs());
         }
         else if command == "f" {
             // force pull existing log
@@ -96,15 +103,16 @@ fn main() -> io::Result<()> {
             let mut conn = pool.get_conn().unwrap();
             let log_id = params_iter.next().unwrap();
             println!("Force syncing entry for {log_id}");
+            let now = Instant::now();
             index_log(log_id, &mut conn);
-            println!("Force update complete");
+            println!("Force update complete in [{}s]!", now.elapsed().as_millis());
         }
         else if command == "q" {
             println!("Bye bye!");
             return Ok(());
         }
         else {
-            println!("\nUnhandled command {command}");
+            println!("\nUnhandled command \"{input}\"");
         }
         input = String::new();
     }
@@ -170,7 +178,7 @@ fn index_log(log_id:&str, conn:&mut PooledConn) {
                             filters::control_codes(
                             filters::pitch(
                             filters::pause(
-                            filters::trunc( vox.content )))));
+                            filters::trunc( vox.content.to_lowercase() )))));
         let content_arr : Vec<&str> = cleaned_vox.split(' ').collect();
         let mut indexed_content = String::new();
         let mut used_words = HashSet::new();
@@ -183,7 +191,7 @@ fn index_log(log_id:&str, conn:&mut PooledConn) {
                     indexed_content.push_str(&(format!("{trimmed} ")));
                 }
                 else {
-                    println!("Vox entry [{}] has word {} that is not in the vocab.  Dropping...", vox.id, trimmed);
+                    println!("-- Vox entry [{}] has word [{}] that is not in the vocab.  Dropping...", vox.id, trimmed);
                 }
             }
         }
@@ -194,24 +202,23 @@ fn index_log(log_id:&str, conn:&mut PooledConn) {
             has_song,
             has_morshu,
         });
-        //println!("---- Indexed Data -- {}", data.to_string());
-
-        conn.exec_batch(
-            r"REPLACE INTO vox_meta (id, indexed_content, has_song, has_morshu)
-            VALUES (:author, :log_id, :date, :content)",
-            vox_index_data.iter().map(|p| params!{
-                "author" => p.id,
-                "log_id" => p.indexed_content.clone(),
-                "date" => p.has_song,
-                "content" => p.has_morshu,
-             })).unwrap();
     }
+
+    println!("Index data for [{log_id}] compiled, sending to server...");
+    conn.exec_batch(
+    r"REPLACE INTO vox_meta (id, indexed_content, has_song, has_morshu)
+    VALUES (:author, :log_id, :date, :content)",
+    vox_index_data.iter().map(|p| params!{
+        "author" => p.id,
+        "log_id" => p.indexed_content.clone(),
+        "date" => p.has_song,
+        "content" => p.has_morshu,
+     })).unwrap();
 
 }
 
 fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
     // Get the voxes for each listing (as identified inside the hrefs above)
-    let wait = time::Duration::from_secs(3);
     let rx_voxes = Regex::new(r#"From (\w*):.*\n(.*)"#).unwrap();
     let listing_path = format!("https://rook.zone/voxlogs/{}", listing.id);
     let listing_req = reqwest::blocking::get(listing_path).unwrap();
@@ -229,6 +236,8 @@ fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
             content: vox_cap[2].to_string(),
         });
     }
+
+    println!("Voxes collected, submitting to db...");
     conn.exec_batch(
         r"INSERT INTO voxes (author, log_id, date, content)
         VALUES (:author, :log_id, :date, :content)",
@@ -238,9 +247,6 @@ fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
             "date" => p.date.clone(),
             "content" => p.content.clone()
          })).unwrap();
-
-    // We have the voxes for this listing!  Now time to feed it to the DB I guess?  Should we have confirmed with the DB earlier if we even needed to do this?
-    thread::sleep(wait);
 }
 
 fn parse_date_from_filename(name:String) -> chrono::Date<Utc> {

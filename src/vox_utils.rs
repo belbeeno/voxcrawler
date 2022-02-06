@@ -6,7 +6,7 @@ use std::io::{self, BufRead};
 
 lazy_static! { static ref TRUNC_RX: Regex = Regex::new(r"[><]\.[0-9]+").unwrap(); }
 lazy_static! { static ref PAUSE_RX: Regex = Regex::new(r"[,.?!]").unwrap(); }
-lazy_static! { static ref PITCH_RX: Regex = Regex::new(r"([0-9+-]{0,20})([a-zA-Z_*]+[a-zA-Z0-9_]*)([0-9+-]{0,20})").unwrap(); }
+lazy_static! { static ref PITCH_RX: Regex = Regex::new(r"([0-9+-]{0,20})([a-zA-Z_*']+[a-zA-Z0-9_]*)([0-9+-]{0,20})").unwrap(); }
 lazy_static! { static ref CONTROL_CODES_RX: Regex = Regex::new(r"(\^[a-zA-Z0-9=]*)|(\*)").unwrap(); }
 lazy_static! { static ref CONTRACTION_L_RX : Regex = Regex::new(r"(('s)|(n't))(\w)").unwrap(); }
 lazy_static! { static ref CONTRACTION_R_RX : Regex = Regex::new(r"(\w)(('s)|(n't))").unwrap(); }
