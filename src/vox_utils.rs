@@ -4,9 +4,6 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufRead};
 
-// Filters for string sent to `voxes`
-lazy_static! { static ref SANATIZE_RX: Regex = Regex::new("[\"]").unwrap(); }
-
 // Filters for strings sent to `vox_meta`
 lazy_static! { static ref TRUNC_RX: Regex = Regex::new(r"[><]\.[0-9]+").unwrap(); }
 lazy_static! { static ref PAUSE_RX: Regex = Regex::new(r"[,.?!]").unwrap(); }
@@ -18,8 +15,9 @@ lazy_static! { static ref CONTRACTION_R_RX : Regex = Regex::new(r"(\w)(('s)|(n't
 pub mod filters {
 	/////////////////////////////////////////////
 	// Filters for strings sent to `voxes`
-	use crate::vox_utils::SANATIZE_RX;
-	pub fn sanatize(vox:String) -> String { SANATIZE_RX.replace_all(&vox, "").to_string() }
+	pub fn sanatize(vox:String) -> String {
+		vox.replace("\"", "").replace("‘", "'")
+	}
 
 	/////////////////////////////////////////////
 	// Filters for strings sent to `vox_meta`

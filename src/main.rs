@@ -178,7 +178,8 @@ fn index_log(log_id:&str, conn:&mut PooledConn) {
                             filters::control_codes(
                             filters::pitch(
                             filters::pause(
-                            filters::trunc( vox.content.to_lowercase() )))));
+                            filters::trunc( 
+                            filters::sanatize( vox.content.to_lowercase() ))))));
         let content_arr : Vec<&str> = cleaned_vox.split(' ').collect();
         let mut indexed_content = String::new();
         let mut used_words = HashSet::new();
