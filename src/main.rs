@@ -4,6 +4,9 @@ use mysql::prelude::*;
 use regex::Regex;
 use std::{env, io, str};
 use std::collections::HashSet;
+use std::fs::{File};
+use std::io::Write;
+use std::path::Path;
 use std::time::Instant;
 
 mod vox_utils;
@@ -52,17 +55,18 @@ impl VoxIndexData {
 // SELECT * FROM `voxes` WHERE `id` = (SELECT `id` FROM `vox_meta` WHERE MATCH(`indexed_content`) AGAINST("mario"));
 
 fn main() -> io::Result<()> {
-    println!("\nWelcome to the vox crawler console!");
+    println!("\n=== Welcome to the vox crawler console! ===");
     fn print_commands() {
-        println!("-- Commands --");
+        println!("== Commands ==");
         println!(" n - pull new voxes into the DB, and index them");
         println!(" f YYYY-MM-DD-voxlog.txt - force pull existing log and index it");
         println!(" q - quit");
     }
 
     let mut input = String::new();
-    while input != "q" {
+    while !input.starts_with("q") {
         print_commands();
+        input = String::new();
         io::stdin().read_line(&mut input).unwrap();
         let mut params_iter = input.split_whitespace();
         let command = match params_iter.next() {
@@ -88,9 +92,11 @@ fn main() -> io::Result<()> {
                     let now = Instant::now();
                     collect_and_commit(&listing, &mut conn);
                     println!("Entry retrieved in [{}ms], indexing...", now.elapsed().as_millis());
+                    let mut errs : Vec<(u64, String)> = Vec::new();
                     let now = Instant::now();
-                    index_log(&listing.id, &mut conn);
+                    index_log(&listing.id, &mut conn, &mut errs);
                     println!("Indexing for entry [{}] complete in [{}ms]", listing.id, now.elapsed().as_millis());
+                    print_report_to_file(listing.id, errs);
                 }
             }
 
@@ -104,21 +110,17 @@ fn main() -> io::Result<()> {
             let log_id = params_iter.next().unwrap();
             println!("Force syncing entry for {log_id}");
             let now = Instant::now();
-            index_log(log_id, &mut conn);
+            let mut errs : Vec<(u64, String)> = Vec::new();
+            index_log(&log_id, &mut conn, &mut errs);
+            print_report_to_file(log_id.to_string(), errs);
             println!("Force update complete in [{}s]!", now.elapsed().as_millis());
         }
-        else if command == "q" {
-            println!("Bye bye!");
-            return Ok(());
-        }
-        else {
+        else if command != "q" {
             println!("\nUnhandled command \"{input}\"");
         }
-        input = String::new();
     }
 
-    //index_log("2021-02-07-voxLog.txt");
-
+    println!("Bye bye!");
     Ok(())
 }
 
@@ -150,7 +152,7 @@ fn get_vox_listing() -> Vec<Listing> {
     listings
 }
 
-fn index_log(log_id:&str, conn:&mut PooledConn) {
+fn index_log(log_id:&str, conn:&mut PooledConn, errs:&mut Vec<(u64, String)>) {
     let query = format!("SELECT `id`, `content` FROM `voxes` WHERE `log_id` = \"{log_id}\"");
     let voxes = conn.query_map(query,
         |(new_id, new_content)| {
@@ -193,6 +195,7 @@ fn index_log(log_id:&str, conn:&mut PooledConn) {
                     indexed_content.push_str(&(format!("{trimmed} ")));
                 }
                 else {
+                    errs.push((vox.id, trimmed.to_string()));
                     println!("-- Vox entry [{}] has word [{}] that is not in the vocab.  Dropping...", vox.id, trimmed);
                 }
             }
@@ -258,4 +261,34 @@ fn parse_date_from_filename(name:String) -> chrono::Date<Utc> {
     let day = split_name[2].parse().unwrap();
 
     return chrono::Utc.ymd(year, month, day);
+}
+
+fn print_report_to_file(log_id:String, errors:Vec<(u64,String)>) {
+    let now = Utc::now();
+    let filename = format!("logs/VoxReport_{}.txt", now.format("%F"));
+    println!("Writing to log [{filename}]...");
+    let path = Path::new(&filename);
+    let display = path.display();
+
+    let mut file : std::fs::File = match File::options().append(true).create(true).open(&path) {
+        Ok(ret) => ret,
+        Err(e) => panic!("Could not create report [{}], reason: [{}]", display, e),
+    };
+
+    if let Err(e) = writeln!(file, "=== Report for [{}] - Error Count: {} ===", log_id, errors.len()) {
+        eprintln!("Couldn't print to file [{display}], reason[{e}]");
+        return;
+    }
+    if errors.len() == 0 {
+        if let Err(e) = writeln!(file, "No errors detected!  Great job everyone!") {
+            eprintln!("Couldn't print to file [{display}], reason[{e}]");
+        }
+        return;
+    }
+    for (id,content) in errors {
+        if let Err(e) = writeln!(file, "[{}] - {}", id, content) {
+            eprintln!("Couldn't print to file [{display}], reason[{e}]");
+            return;
+        }
+    }
 }
