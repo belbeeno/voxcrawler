@@ -147,6 +147,7 @@ cable
 call
 called
 can
+can't
 canal
 cannot
 cap

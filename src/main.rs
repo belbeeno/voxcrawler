@@ -107,13 +107,18 @@ fn main() -> io::Result<()> {
             let opts = Opts::from_url(&get_db_path()).unwrap();
             let pool = Pool::new(opts).unwrap();
             let mut conn = pool.get_conn().unwrap();
-            let log_id = params_iter.next().unwrap();
-            println!("Force syncing entry for {log_id}");
-            let now = Instant::now();
-            let mut errs : Vec<(u64, String)> = Vec::new();
-            index_log(&log_id, &mut conn, &mut errs);
-            print_report_to_file(log_id.to_string(), errs);
-            println!("Force update complete in [{}s]!", now.elapsed().as_millis());
+
+            let mut iter = params_iter.next();
+            while iter != None {
+                let log_id = iter.unwrap();
+                println!("Force syncing entry for {log_id}");
+                let now = Instant::now();
+                let mut errs : Vec<(u64, String)> = Vec::new();
+                index_log(&log_id, &mut conn, &mut errs);
+                print_report_to_file(log_id.to_string(), errs);
+                println!("Force update complete in [{}s]!", now.elapsed().as_millis());
+                iter = params_iter.next();
+            }
         }
         else if command != "q" {
             println!("\nUnhandled command \"{input}\"");

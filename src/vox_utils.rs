@@ -36,7 +36,10 @@ pub mod filters {
 	pub fn control_codes(vox:String) -> String { CONTROL_CODES_RX.replace_all(&vox, "").to_string() }
 
 	use crate::vox_utils::CONTRACTION_RX;
-	pub fn contractions(vox:String) -> String { CONTRACTION_RX.replace_all(&vox, |caps: &regex::Captures| {format!(" {} ", &caps[1])}).to_string() }
+	pub fn contractions(vox:String) -> String { 
+		// No lookahead with Rust regex... ah well
+		CONTRACTION_RX.replace_all(&vox, |caps: &regex::Captures| {format!(" {} ", &caps[1])}).to_string().replace("ca n't", "can't") 
+	}
 
 	use crate::vox_utils::CLEANUP_RX;
 	pub fn cleanup(vox:String) -> String { CLEANUP_RX.replace_all(&vox, " ").to_string() }
