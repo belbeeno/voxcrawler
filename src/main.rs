@@ -5,6 +5,7 @@ use regex::Regex;
 use std::{env, io, str};
 use std::collections::HashSet;
 use std::fs::{File};
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
@@ -59,6 +60,7 @@ fn main() -> io::Result<()> {
     fn print_commands() {
         println!("== Commands ==");
         println!(" n - pull new voxes into the DB, and index them");
+        println!(" m - pull voxes from file into the DB and index them");
         println!(" f YYYY-MM-DD-voxlog.txt - force pull existing log and index it");
         println!(" q - quit");
     }
@@ -116,6 +118,38 @@ fn main() -> io::Result<()> {
                 let mut errs : Vec<(u64, String)> = Vec::new();
                 index_log(&log_id, &mut conn, &mut errs);
                 print_report_to_file(log_id.to_string(), errs);
+                println!("Force update complete in [{}s]!", now.elapsed().as_millis());
+                iter = params_iter.next();
+            }
+        }
+        else if command == "m" {
+            // force pull existing log
+            let opts = Opts::from_url(&get_db_path()).unwrap();
+            let pool = Pool::new(opts).unwrap();
+            let mut conn = pool.get_conn().unwrap();
+
+            let mut iter = params_iter.next();
+            while iter != None {
+                let file_path = iter.unwrap().to_string();
+                let path = Path::new(&file_path);
+                println!("Force syncing entry for file {file_path}");
+                let now = Instant::now();
+                let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
+                let parsed_date : Date<Utc> = parse_date_from_filename(file_name);
+
+                let listing = Listing {
+                    id: path.file_name().unwrap().to_str().unwrap().to_string(),
+                    date: parsed_date.format("%Y-%m-%d").to_string(),
+                };
+                load_and_commit(&listing, path, &mut conn);
+                println!("Entry retrieved in [{}ms], indexing...", now.elapsed().as_millis());
+                let mut errs : Vec<(u64, String)> = Vec::new();
+                let now = Instant::now();
+                match path.file_name() {
+                    Some(s) => index_log(s.to_str().unwrap(), &mut conn, &mut errs),
+                    None => eprintln!("Path submitted for m has no filename"),
+                }
+                print_report_to_file(listing.id, errs);
                 println!("Force update complete in [{}s]!", now.elapsed().as_millis());
                 iter = params_iter.next();
             }
@@ -227,17 +261,11 @@ fn index_log(log_id:&str, conn:&mut PooledConn, errs:&mut Vec<(u64, String)>) {
 
 }
 
-fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
-    // Get the voxes for each listing (as identified inside the hrefs above)
-    let rx_voxes = Regex::new(r#"From (\w*):.*\n(.*)"#).unwrap();
-    let listing_path = format!("https://rook.zone/voxlogs/{}", listing.id);
-    let listing_req = reqwest::blocking::get(listing_path).unwrap();
-    let listing_body = listing_req.text().unwrap();
-    println!("{}", listing.to_string());
-
+fn commit(listing:&Listing, body:String, conn:&mut PooledConn) {
     // Parse all the voxes and their authors in this listing
+    let rx_voxes = Regex::new(r#"From (\w*):.*\n(.*)"#).unwrap();
     let mut voxes : Vec<VoxEntry> = Vec::new();
-    for vox_cap in rx_voxes.captures_iter(&listing_body) {
+    for vox_cap in rx_voxes.captures_iter(&body) {
         voxes.push( VoxEntry{
             id: 0,  // Not assigned on submission, it's auto incremented
             author: filters::sanatize(vox_cap[1].to_string()),
@@ -259,7 +287,39 @@ fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
          })).unwrap();
 }
 
+fn collect_and_commit(listing:&Listing, conn:&mut PooledConn) {
+    // Get the voxes for each listing (as identified inside the hrefs above)
+    let listing_path = format!("https://rook.zone/voxlogs/{}", listing.id);
+    let listing_req = reqwest::blocking::get(listing_path).unwrap();
+    let listing_body = listing_req.text().unwrap();
+    println!("{}", listing.to_string());
+
+    commit(listing, listing_body, conn);
+}
+
+fn load_and_commit(listing:&Listing, path:&Path, conn:&mut PooledConn) {
+    let path_str = match path.to_str() {
+        Some(str) => str,
+        None => "Undefined",
+    };
+    let file_result = File::options().read(true).open(path);
+    if file_result.is_err() {
+        eprintln!("Couldn't load voxes from file [{path_str}] because [{}]", file_result.unwrap_err().to_string());
+        return;
+    }
+    let mut file = file_result.unwrap();
+    let mut file_body = String::new();
+    match file.read_to_string(&mut file_body) {
+        Ok(_size) => {
+            println!("{}", listing.to_string());
+            commit(listing, file_body, conn)
+        },
+        Err(e) => eprintln!("Couldn't load voxes from file [{path_str}] because [{}]", e.to_string()),
+    }
+}
+
 fn parse_date_from_filename(name:String) -> chrono::Date<Utc> {
+    println!("{}", name);
     let split_name :Vec<&str> = name.split("-").collect();
     let year = split_name[0].parse().unwrap();
     let month = split_name[1].parse().unwrap();
