@@ -59,6 +59,7 @@ fn main() -> io::Result<()> {
     fn print_commands() {
         println!("== Commands ==");
         println!(" n - pull new voxes into the DB, and index them");
+        println!(" r - (re)index logs");
         println!(" m - pull voxes from file into the DB and index them");
         println!(" f YYYY-MM-DD-voxlog.txt - force pull existing log and index it");
         println!(" d [YYYY-MM-DD-voxlog.txt] - dry run (with optional speicific file)");
@@ -76,7 +77,7 @@ fn main() -> io::Result<()> {
             Some(_cmd) => _cmd,
         };
         let letter = command.to_string().as_bytes()[0] as char;
-        if letter == 'n' {
+        if letter == 'n' || letter == 'r' {
             // pull new voxes
             println!("Retreiving vox listing...");
             let total_now = Instant::now();
@@ -87,14 +88,16 @@ fn main() -> io::Result<()> {
             let mut conn = pool.get_conn().unwrap();
             println!("Listing retrieved in [{}ms], processing...", now.elapsed().as_millis());
             for listing in listings{
-                if is_on_file(&listing.id, &mut conn) {
+                if letter == 'n' && is_on_file(&listing.id, &mut conn) {
                     println!("Entry [{}] already on db.  Ignoring...", &listing.id);
                 }
                 else {
-                    println!("Retreiving entry [{}]...", listing.id);
-                    let now = Instant::now();
-                    collect_and_commit(&listing, &mut conn, false);
-                    println!("Entry retrieved in [{}ms], indexing...", now.elapsed().as_millis());
+                    if letter == 'n' || !is_on_file(&listing.id, &mut conn) {
+                        println!("Retreiving entry [{}]...", listing.id);
+                        let now = Instant::now();
+                        collect_and_commit(&listing, &mut conn, false);
+                        println!("Entry retrieved in [{}ms], indexing...", now.elapsed().as_millis());
+                    }
                     let mut errs : Vec<(u64, String)> = Vec::new();
                     let now = Instant::now();
                     index_log(&listing.id, &mut conn, &mut errs, false);
